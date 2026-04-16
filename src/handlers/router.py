@@ -275,7 +275,11 @@ class Router:
         await self._send_placeholder(update, "➕ افزودن فروشگاه")
 
     async def _handle_store_edit(self, update, user_id: int, store_id: int) -> None:
-        await self._send_placeholder(update, f"✏️ ویرایش فروشگاه {store_id}")
+        from src.handlers.menu.stores.edit.edit_profile import StoreEditProfileHandler
+        from src.utils.state_manager import StateManager
+        state_manager = StateManager(self.db)  # یا هر روشی که StateManager را می‌سازید
+        handler = StoreEditProfileHandler(self.db, state_manager)
+        await handler.show_edit_menu(update, None, user_id, store_id)
 
     async def _handle_woocommerce(self, update, user_id: int, store_id: int) -> None:
         await self._send_placeholder(update, f"🔌 مدیریت ووکامرس فروشگاه {store_id}")
