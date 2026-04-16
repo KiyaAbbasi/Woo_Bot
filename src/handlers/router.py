@@ -1,40 +1,47 @@
-﻿"""
-Woocommerce Bot
-
+"""
+WooCommerce to Bale Bot (WooBot)
 router.py
-Central message router â€” dispatches updates to the correct handler
-based on user state and message content.
 
-@package    Woocommerce Bot
+Central message router — dispatches updates to the correct handler
+based on user state and callback data prefix (modular menu architecture).
+
+@package    WooBot
 @subpackage Core
 @author     [Kiya Holding] <KiyaHolding@gmail.com>
 @copyright  2026 [Kiya Holding / WooBot]
 @license    Proprietary
-@version    1.0.0
+@version    2.0.0
 @link       [KiyaHolding.com]
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional
 
-from src.handlers.main_menu_handler import (
-    MainMenuHandler,
-    BTN_STORES,
-    BTN_ADD_STORE,
-    BTN_NETWORKS,
-    BTN_CHANNELS,
-    BTN_WOOCOM,
-    BTN_REPORTS,
-    BTN_PROFILE,
-    BTN_HELP,
-)
+from src.database.db_manager import DatabaseManager
+from src.auth.user_manager import UserManager
 from src.handlers.registration_handler import RegistrationHandler, RegState
 from src.logger.log_handler import get_logger
 
+# New modular menu handlers
+from src.handlers.menu.main_menu.main_menu_handler import MainMenuHandler, CB_STORES, CB_REPORTS, CB_PROFILE, CB_HELP
+from src.handlers.menu.stores.stores_list_handler import (
+    StoresListHandler,
+    CB_STORE_SELECT_PREFIX,
+    CB_ADD_STORE,
+)
+from src.handlers.menu.stores.dashboard.store_dashboard import (
+    StoreDashboardHandler,
+    CB_STORE_EDIT,
+    CB_STORE_WOOCOMMERCE,
+    CB_STORE_CHANNELS,
+    CB_STORE_SCHEDULING,
+    CB_STORE_MANUAL_POST,
+    CB_BACK_TO_STORES,
+)
+
 if TYPE_CHECKING:
     from src.bale.api import BaleBot
-    from src.auth.user_manager import UserManager
 
 logger = get_logger("woobot.router")
 
@@ -42,26 +49,31 @@ logger = get_logger("woobot.router")
 class Router:
     """
     Central dispatcher for all incoming Bale updates.
+    Routes based on registration state and callback data prefixes.
     """
 
-    def __init__(self, user_manager: UserManager, bot: BaleBot) -> None:
-        self._bot = bot
-        self._reg_handler = RegistrationHandler(user_manager, bot)
-        self._menu_handler = MainMenuHandler(user_manager, bot)
+    def __init__(self, db_manager: DatabaseManager, bot: BaleBot) -> None:
+        """
+        Initialize the router with all required handlers.
 
-        # Ù…Ø¬Ù…ÙˆØ¹Ù‡ Ù…ØªÙ† Ø¯Ú©Ù…Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ù†ÙˆÛŒ Ø§ØµÙ„ÛŒ Ø¨Ø±Ø§ÛŒ ØªØ´Ø®ÛŒØµ Ø³Ø±ÛŒØ¹
-        self._main_menu_buttons = {
-            BTN_STORES,
-            BTN_ADD_STORE,
-            BTN_NETWORKS,
-            BTN_CHANNELS,
-            BTN_WOOCOM,
-            BTN_REPORTS,
-            BTN_PROFILE,
-            BTN_HELP,
-        }
+        Args:
+            db_manager: Database manager instance.
+            bot: BaleBot API client instance.
+        """
+        self.db = db_manager
+        self.bot = bot
+        self.user_manager = UserManager(db_manager)
 
-    # â”€â”€â”€ Main entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Handlers
+        self.reg_handler = RegistrationHandler(self.user_manager, bot)
+        self.main_menu_handler = MainMenuHandler(db_manager)
+        self.stores_list_handler = StoresListHandler(db_manager)
+        self.store_dashboard_handler = StoreDashboardHandler(db_manager)
+
+        # Cache for user_id lookups (avoid repeated DB hits)
+        self._user_id_cache: dict[int, Optional[int]] = {}
+
+    # ─── Main entry point ─────────────────────────────────────────────────
 
     async def route(self, update: dict) -> None:
         """Route one Bale update to the appropriate handler."""
@@ -73,7 +85,7 @@ class Router:
             return
         logger.debug("Unhandled update type: %s", list(update.keys()))
 
-    # â”€â”€â”€ Message routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ─── Message routing ───────────────────────────────────────────────────
 
     async def _handle_message(self, update: dict) -> None:
         message = update.get("message") or update.get("edited_message")
@@ -82,57 +94,35 @@ class Router:
 
         chat_id = message["chat"]["id"]
         text = message.get("text", "").strip()
-        if not text:
-            return
 
-        logger.debug("Message | chat_id=%s text=%r", chat_id, text)
-
-        destination = self._resolve_destination(chat_id, text)
-
-        # â”€â”€ 1) Ø¬Ø±ÛŒØ§Ù† Ø«Ø¨Øªâ€ŒÙ†Ø§Ù…/ÙˆØ±ÙˆØ¯ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if destination == "registration":
-            reply = await self._reg_handler.handle(chat_id, text)
+        # If user sends "/start" or any text while not registered, go to registration
+        session = self.reg_handler.get_session(chat_id)
+        if session["state"] != RegState.DONE:
+            reply = await self.reg_handler.handle(chat_id, text)
             await self._send_reply(chat_id, reply)
 
-            # Ø§Ú¯Ø± Ø¨Ø¹Ø¯ Ø§Ø² Ø§ÛŒÙ† Ù¾ÛŒØ§Ù…ØŒ Ú©Ø§Ø±Ø¨Ø± Ø«Ø¨Øªâ€ŒÙ†Ø§Ù…/ÙˆØ±ÙˆØ¯Ø´ Ú©Ø§Ù…Ù„ Ø´Ø¯Ù‡ Ø¨Ø§Ø´Ø¯ (state=DONE)ØŒ
-            # ÛŒÚ©â€ŒØ¨Ø§Ø± Ù…Ù†ÙˆÛŒ Ø§ØµÙ„ÛŒ Ø±Ø§ Ù‡Ù… Ù†Ù…Ø§ÛŒØ´ Ù…ÛŒâ€ŒØ¯Ù‡ÛŒÙ….
-            session = self._reg_handler.get_session(chat_id)
-            if session["state"] == RegState.DONE:
-                await self._menu_handler.show_menu(chat_id)
-
+            # After registration completed, show main menu automatically
+            if self.reg_handler.get_session(chat_id)["state"] == RegState.DONE:
+                await self._show_main_menu(chat_id)
             return
 
-        # â”€â”€ 2) Ú©Ø§Ø±Ø¨Ø± ÙˆØ§Ø±Ø¯ Ø´Ø¯Ù‡ â†’ Ù…Ù†ÙˆÛŒ Ø§ØµÙ„ÛŒ / Ø²ÛŒØ±Ù…Ù†ÙˆÙ‡Ø§ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if destination == "main_menu":
-            # Ø§Ú¯Ø± /menu Ø²Ø¯Ù‡ØŒ Ù…Ù†ÙˆÛŒ Ø§ØµÙ„ÛŒ Ø±Ø§ Ù†Ø´Ø§Ù† Ù…ÛŒâ€ŒØ¯Ù‡ÛŒÙ…
-            if text == "/menu":
-                await self._menu_handler.show_menu(chat_id)
-                return
-
-            # Ø§Ú¯Ø± Ù…ØªÙ† ÛŒÚ©ÛŒ Ø§Ø² Ø¯Ú©Ù…Ù‡â€ŒÙ‡Ø§ÛŒ Ù…Ù†ÙˆÛŒ Ø§ØµÙ„ÛŒ Ø¨ÙˆØ¯ â†’ Ø¨Ù‡ MainMenuHandler Ø¨Ø¯Ù‡ÛŒÙ…
-            if text in self._main_menu_buttons:
-                reply = await self._menu_handler.handle_message(chat_id, text)
-                await self._send_reply(chat_id, reply)
-                return
-
-            # Ø¯Ø± ØºÛŒØ± Ø§ÛŒÙ† ØµÙˆØ±ØªØŒ Ù¾ÛŒØ§Ù… Ø®Ø·Ø§ + Ù†Ù…Ø§ÛŒØ´ Ù…Ø¬Ø¯Ø¯ Ù…Ù†ÙˆÛŒ Ø§ØµÙ„ÛŒ
-            await self._send_reply(
-                chat_id,
-                {
-                    "text": "âš ï¸ Ú¯Ø²ÛŒÙ†Ù‡ Ù†Ø§Ù…Ø¹ØªØ¨Ø±. Ù„Ø·ÙØ§Ù‹ Ø§Ø² Ù…Ù†ÙˆÛŒ Ø²ÛŒØ± Ø§Ù†ØªØ®Ø§Ø¨ Ú©Ù†ÛŒØ¯:",
-                    "reply_markup": self._menu_handler._build_main_menu_keyboard(),  # type: ignore
-                },
-            )
+        # User is logged in.
+        # Any text message (except commands) is ignored or prompts main menu.
+        if text == "/start" or text == "/menu":
+            await self._show_main_menu(chat_id)
             return
 
-        # â”€â”€ fallback (Ø¯Ø± Ø­Ø§Ù„Øª Ø¹Ø§Ø¯ÛŒ Ù†Ø¨Ø§ÛŒØ¯ Ø¨Ø±Ø³ÛŒÙ…) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        logger.debug(
-            "Fallback reached in _handle_message | chat_id=%s text=%r destination=%s",
-            chat_id, text, destination
+        # For any other text, show a helpful message with main menu
+        await self._send_reply(
+            chat_id,
+            {
+                "text": "⚠️ لطفاً از منوی زیر گزینه مورد نظر را انتخاب کنید:",
+                "reply_markup": await self._build_main_menu_keyboard(chat_id),
+            },
         )
-        return
 
-    # â”€â”€â”€ Callback routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ─── Callback routing ──────────────────────────────────────────────────
+
     async def _handle_callback(self, update: dict) -> None:
         callback = update.get("callback_query")
         if not callback:
@@ -140,26 +130,170 @@ class Router:
 
         chat_id = callback["message"]["chat"]["id"]
         data = callback.get("data", "")
-        session = self._reg_handler.get_session(chat_id)
-        just_finished_registration = False
 
-        # بعد از تکمیل ورود/ثبت‌نام، callbackهای منوهای اینلاین باید به
-        # هندلر منو برسند؛ در غیر این صورت هنوز متعلق به جریان ثبت‌نام هستند.
-        if session["state"] == RegState.DONE:
-            if data.startswith("store:"):
-                reply = await self._menu_handler.handle_store_callback(chat_id, data)
-            else:
-                reply = await self._menu_handler.handle_callback(chat_id, data)
+        # Answer callback query to remove loading state
+        await self.bot.answer_callback_query(callback["id"])
+
+        # Check if user is in registration flow
+        session = self.reg_handler.get_session(chat_id)
+        if session["state"] != RegState.DONE:
+            reply = await self.reg_handler.handle_callback(chat_id, data)
+            await self._send_reply(chat_id, reply)
+
+            if self.reg_handler.get_session(chat_id)["state"] == RegState.DONE:
+                await self._show_main_menu(chat_id)
+            return
+
+        # User is logged in – get internal user_id
+        user_id = await self._get_user_id(chat_id)
+        if user_id is None:
+            logger.error(f"Logged-in user with chat_id {chat_id} not found in DB.")
+            await self._send_reply(chat_id, {"text": "❌ خطای احراز هویت. لطفاً /start را بزنید."})
+            return
+
+        # Build a pseudo-update object for handlers that expect Update (from PTB)
+        # We'll simulate a minimal Update object using simple namespace.
+        class FakeUpdate:
+            def __init__(self, callback_query, effective_message):
+                self.callback_query = callback_query
+                self.effective_message = effective_message
+
+        fake_update = FakeUpdate(callback, callback["message"])
+
+        # Route based on callback data prefix
+        if data == "main_menu":
+            await self.main_menu_handler.show_main_menu(fake_update, None, user_id)
+
+        elif data == CB_STORES:
+            await self.stores_list_handler.show_stores_list(fake_update, None, user_id)
+
+        elif data == CB_REPORTS:
+            await self._show_reports(fake_update, user_id)
+
+        elif data == CB_PROFILE:
+            await self._show_profile(fake_update, user_id)
+
+        elif data == CB_HELP:
+            await self._show_help(fake_update, user_id)
+
+        elif data.startswith(CB_STORE_SELECT_PREFIX):
+            store_id = int(data.split(CB_STORE_SELECT_PREFIX)[1])
+            await self.stores_list_handler.handle_store_selection(fake_update, None, user_id, store_id)
+
+        elif data == CB_ADD_STORE:
+            await self._handle_add_store(fake_update, user_id)
+
+        elif data == CB_BACK_TO_STORES:
+            await self.stores_list_handler.show_stores_list(fake_update, None, user_id)
+
+        # Store dashboard actions
+        elif data.startswith(CB_STORE_EDIT):
+            store_id = int(data.split("_")[-1])
+            await self._handle_store_edit(fake_update, user_id, store_id)
+
+        elif data.startswith(CB_STORE_WOOCOMMERCE):
+            store_id = int(data.split("_")[-1])
+            await self._handle_woocommerce(fake_update, user_id, store_id)
+
+        elif data.startswith(CB_STORE_CHANNELS):
+            store_id = int(data.split("_")[-1])
+            await self._handle_channels(fake_update, user_id, store_id)
+
+        elif data.startswith(CB_STORE_SCHEDULING):
+            store_id = int(data.split("_")[-1])
+            await self._handle_scheduling(fake_update, user_id, store_id)
+
+        elif data.startswith(CB_STORE_MANUAL_POST):
+            store_id = int(data.split("_")[-1])
+            await self._handle_manual_post(fake_update, user_id, store_id)
+
         else:
-            reply = await self._reg_handler.handle_callback(chat_id, data)
-            if self._reg_handler.get_session(chat_id)["state"] == RegState.DONE:
-                just_finished_registration = True
+            logger.warning(f"Unhandled callback data: {data}")
+            await self._send_reply(
+                chat_id,
+                {"text": "⚠️ این بخش در حال توسعه است. به زودی تکمیل می‌شود."}
+            )
 
-        await self._send_reply(chat_id, reply)
+    # ─── Helper methods ────────────────────────────────────────────────────
 
-        if just_finished_registration:
-            await self._menu_handler.show_menu(chat_id)
+    async def _get_user_id(self, chat_id: int) -> Optional[int]:
+        """Retrieve internal user_id from chat_id (Bale user ID)."""
+        if chat_id in self._user_id_cache:
+            return self._user_id_cache[chat_id]
+        user = await self.user_manager.get_user_by_chat_id(chat_id)
+        uid = user["id"] if user else None
+        self._user_id_cache[chat_id] = uid
+        return uid
 
-        await self._bot.answer_callback_query(callback["id"])
+    async def _show_main_menu(self, chat_id: int) -> None:
+        """Send the main menu as a new message (used after registration)."""
+        user_id = await self._get_user_id(chat_id)
+        if user_id is None:
+            return
+        # Create a fake update for sending message
+        class FakeMessage:
+            def __init__(self, chat_id):
+                self.chat_id = chat_id
+        fake_update = type('obj', (object,), {
+            'callback_query': None,
+            'effective_message': FakeMessage(chat_id)
+        })
+        await self.main_menu_handler.show_main_menu(fake_update, None, user_id)
 
-
+    async def _build_main_menu_keyboard(self, chat_id: int) -> dict:
+        """Build inline keyboard markup for main menu (used in fallback)."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏬 فروشگاه‌های من", callback_data=CB_STORES)],
+            [InlineKeyboardButton("📊 گزارش‌ها", callback_data=CB_REPORTS)],
+            [InlineKeyboardButton("👤 پروفایل", callback_data=CB_PROFILE)],
+            [InlineKeyboardButton("❓ راهنما", callback_data=CB_HELP)],
+        ])
+        return keyboard.to_dict()
+
+    async def _send_reply(self, chat_id: int, reply: dict) -> None:
+        """Send a message using the bot API."""
+        if "text" in reply:
+            await self.bot.send_message(
+                chat_id,
+                reply["text"],
+                reply_markup=reply.get("reply_markup")
+            )
+
+    # ─── Temporary placeholders for unimplemented sections ─────────────────
+
+    async def _show_reports(self, update, user_id: int) -> None:
+        await self._send_placeholder(update, "📊 گزارش‌ها")
+
+    async def _show_profile(self, update, user_id: int) -> None:
+        await self._send_placeholder(update, "👤 پروفایل")
+
+    async def _show_help(self, update, user_id: int) -> None:
+        await self._send_placeholder(update, "❓ راهنما")
+
+    async def _handle_add_store(self, update, user_id: int) -> None:
+        await self._send_placeholder(update, "➕ افزودن فروشگاه")
+
+    async def _handle_store_edit(self, update, user_id: int, store_id: int) -> None:
+        await self._send_placeholder(update, f"✏️ ویرایش فروشگاه {store_id}")
+
+    async def _handle_woocommerce(self, update, user_id: int, store_id: int) -> None:
+        await self._send_placeholder(update, f"🔌 مدیریت ووکامرس فروشگاه {store_id}")
+
+    async def _handle_channels(self, update, user_id: int, store_id: int) -> None:
+        await self._send_placeholder(update, f"📣 مدیریت کانال‌های فروشگاه {store_id}")
+
+    async def _handle_scheduling(self, update, user_id: int, store_id: int) -> None:
+        await self._send_placeholder(update, f"⚙️ تنظیمات ارسال فروشگاه {store_id}")
+
+    async def _handle_manual_post(self, update, user_id: int, store_id: int) -> None:
+        await self._send_placeholder(update, f"📋 ارسال دستی فروشگاه {store_id}")
+
+    async def _send_placeholder(self, update, text: str) -> None:
+        """Send a temporary 'under construction' message."""
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                f"🚧 {text}\n\nاین بخش به زودی تکمیل خواهد شد."
+            )
+        else:
+            await self.bot.send_message(update.effective_message.chat_id, f"🚧 {text}")
