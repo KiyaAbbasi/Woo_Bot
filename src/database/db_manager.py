@@ -2,19 +2,18 @@
 Woocommerce Bot
 
 db_manager.py
-Database connection manager using SQLAlchemy
+Async database manager using SQLAlchemy 2.0 async with aiosqlite.
 
 @package    Woocommerce Bot
 @subpackage Database
 @author     [Kiya Holding] <KiyaHolding@gmail.com>
 @copyright  2026 [Kiya Holding / WooBot]
 @license    Proprietary
-@version    1.0.0
+@version    2.0.0
 @link       [KiyaHolding.com]
 """
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 from src.database.models import Base
 from src.logger.log_handler import get_logger
@@ -22,46 +21,44 @@ from src.config.settings import settings
 
 logger = get_logger(__name__)
 
-# ─── Engine ────────────────────────────────────────────────────────────────────
-engine = create_engine(
-    f"sqlite:///{settings.DB_PATH}",
-    connect_args={"check_same_thread": False},
+# ─── Async Engine ────────────────────────────────────────────────────────────
+# استفاده از aiosqlite برای توسعه MVP
+DATABASE_URL = f"sqlite+aiosqlite:///{settings.DB_PATH}"
+
+engine = create_async_engine(
+    DATABASE_URL,
     echo=False,
+    future=True,
 )
 
-# ─── Session Factory ───────────────────────────────────────────────────────────
-SessionLocal = sessionmaker(
-    bind=engine,
+# ─── Async Session Factory ───────────────────────────────────────────────────
+AsyncSessionLocal = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
     autocommit=False,
     autoflush=False,
 )
 
 
-# ─── Init ──────────────────────────────────────────────────────────────────────
-def init_db() -> None:
-    """ساخت تمام جداول در صورت نبود"""
+# ─── Init ────────────────────────────────────────────────────────────────────
+async def init_db() -> None:
+    """ساخت تمام جداول در صورت نبود (اجرای async)"""
     try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("✅ Database initialized successfully.")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("✅ Database initialized successfully (async).")
     except SQLAlchemyError as e:
         logger.error(f"❌ Database init failed: {e}")
         raise
 
 
-def get_db() -> Session:
+async def get_db() -> AsyncSession:
     """
-    Dependency-style session getter.
+    Dependency-style async session getter.
     Usage:
-        db = get_db()
-        try:
+        async with get_db() as db:
             ...
-        finally:
-            db.close()
     """
-    db = SessionLocal()
-    try:
-        return db
-    except SQLAlchemyError as e:
-        db.close()
-        logger.error(f"❌ DB session error: {e}")
-        raise
+    async with AsyncSessionLocal() as session:
+        yield session
