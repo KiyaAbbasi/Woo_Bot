@@ -1,0 +1,11 @@
+# Woocommerce Bot Requirements
+# File: requirements.txt
+# Description: Lists all project dependencies.
+
+python-dotenv
+SQLAlchemy
+requests
+httpx
+aiohttp
+opencv-python
+pyzbar
